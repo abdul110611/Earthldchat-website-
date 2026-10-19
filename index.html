@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorldChat</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--tx:#1b1f2a;--mu:#6b7280;--ac:#4f46e5;--ot:#eceef5;--bd:#e3e5ee}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1117;--card:#181b24;--tx:#eceef5;--mu:#9aa0b0;--ac:#818cf8;--ot:#242836;--bd:#2a2e3d}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--tx);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.app{height:100%;display:flex;flex-direction:column;max-width:760px;margin:0 auto;background:var(--card);border-inline:1px solid var(--bd)}
+header{padding:12px 16px;border-bottom:1px solid var(--bd)}
+h1{font-size:18px;margin:0 0 8px}
+.rooms{display:flex;gap:8px;overflow-x:auto}
+.rooms button{border:1px solid var(--bd);background:var(--card);color:var(--tx);padding:6px 12px;border-radius:999px;cursor:pointer;white-space:nowrap;font:inherit;font-size:14px}
+.rooms button.on{background:var(--ac);border-color:var(--ac);color:#fff}
+#log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+.m{max-width:80%;padding:8px 12px;border-radius:16px;background:var(--ot);align-self:flex-start;overflow-wrap:anywhere}
+.m.me{background:var(--ac);color:#fff;align-self:flex-end}
+.m small{display:block;font-size:12px;opacity:.75;margin-bottom:2px}
+.m .rp{background:none;border:0;color:inherit;opacity:.5;cursor:pointer;font-size:11px;padding:0 0 0 8px}
+.note{color:var(--mu);text-align:center;font-size:14px;margin:auto}
+form,.join{display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--bd)}
+input,select{flex:1;min-width:0;padding:10px 12px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);font:inherit}
+.send{padding:10px 18px;border:0;border-radius:10px;background:var(--ac);color:#fff;font:inherit;cursor:pointer}
+.join{flex-direction:column;border-top:0;margin:auto;width:100%;max-width:380px}
+.join h2{margin:0 0 4px;font-size:20px}.join p{margin:0;color:var(--mu);font-size:13px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header><h1>🌍 WorldChat</h1><div class="rooms" id="rooms"></div></header>
+  <div id="log"><div class="note">Connecting…</div></div>
+  <div id="foot"></div>
+</div>
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {getAuth,signInAnonymously,onAuthStateChanged} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {getFirestore,collection,addDoc,query,orderBy,limit,onSnapshot,serverTimestamp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+// 1) PASTE YOUR FIREBASE CONFIG HERE (see README.md)
+const firebaseConfig={
+  apiKey:"YOUR_API_KEY",
+  authDomain:"YOUR_PROJECT.firebaseapp.com",
+  projectId:"YOUR_PROJECT",
+  appId:"YOUR_APP_ID"
+};
+
+const ROOMS=[["global","🌍 Global"],["english","🇬🇧 English"],["espanol","🇪🇸 Español"],["francais","🇫🇷 Français"],["deutsch","🇩🇪 Deutsch"],["portugues","🇧🇷 Português"],["hindi","🇮🇳 हिन्दी"],["chill","☕ Chill"]];
+const COUNTRIES=["🇺🇸 USA","🇬🇧 UK","🇩🇰 Denmark","🇩🇪 Germany","🇫🇷 France","🇪🇸 Spain","🇮🇹 Italy","🇧🇷 Brazil","🇲🇽 Mexico","🇮🇳 India","🇨🇳 China","🇯🇵 Japan","🇰🇷 South Korea","🇳🇬 Nigeria","🇿🇦 South Africa","🇪🇬 Egypt","🇹🇷 Turkey","🇦🇺 Australia","🌐 Other"];
+const COOLDOWN_MS=2000;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+let db,uid=null,room="global",unsub=null,last=0,profile=null;
+try{profile=JSON.parse(localStorage.getItem("wc_profile")||"null")}catch(e){}
+
+$("rooms").innerHTML=ROOMS.map(([k,l])=>`<button data-k="${k}">${l}</button>`).join("");
+$("rooms").onclick=e=>{const k=e.target.dataset.k;if(k)switchRoom(k)};
+
+function foot(){
+  const f=$("foot");
+  if(!profile){
+    f.innerHTML=`<div class="join"><h2>Join the chat</h2><p>Be kind. No spam, hate or sharing personal info. Not for under-13s.</p><input id="nm" maxlength="24" placeholder="Pick a nickname"><select id="co">${COUNTRIES.map(c=>`<option>${c}</option>`).join("")}</select><button class="send" id="go">Start chatting</button></div>`;
+    $("go").onclick=()=>{const n=$("nm").value.trim();if(!n)return $("nm").focus();profile={name:n,country:$("co").value};try{localStorage.setItem("wc_profile",JSON.stringify(profile))}catch(e){}foot()};
+  }else{
+    f.innerHTML=`<form id="f"><input id="tx" maxlength="500" placeholder="Message as ${esc(profile.name)}…" autocomplete="off"><button class="send">Send</button></form>`;
+    $("f").onsubmit=send;
+  }
+}
+
+async function send(e){
+  e.preventDefault();
+  const t=$("tx").value.trim();
+  if(!t||!uid)return;
+  if(Date.now()-last<COOLDOWN_MS)return;
+  last=Date.now();$("tx").value="";
+  try{await addDoc(collection(db,"rooms",room,"messages"),{text:t,name:profile.name,country:profile.country,uid,ts:serverTimestamp()})}
+  catch(err){console.error(err);$("log").insertAdjacentHTML("beforeend",`<div class="note">Couldn't send. Try again in a moment.</div>`)}
+}
+
+async function report(roomId,msgId){
+  if(!confirm("Report this message to the moderators?"))return;
+  try{await addDoc(collection(db,"reports"),{room:roomId,msg:msgId,by:uid,ts:serverTimestamp()});alert("Thanks, reported.")}catch(e){}
+}
+
+function draw(docs){
+  const log=$("log"),near=log.scrollHeight-log.scrollTop-log.clientHeight<120;
+  log.innerHTML=docs.length?docs.map(d=>{const m=d.data();
+    return `<div class="m ${m.uid===uid?"me":""}"><small>${esc(m.country||"")} ${esc(m.name||"Guest")}${m.uid===uid?"":`<button class="rp" data-id="${d.id}" title="Report">⚑ report</button>`}</small>${esc(m.text)}</div>`}).join(""):`<div class="note">No messages yet. Say hello! 👋</div>`;
+  if(near||docs.length<2)log.scrollTop=log.scrollHeight;
+}
+$("log").onclick=e=>{const id=e.target.dataset.id;if(id)report(room,id)};
+
+function switchRoom(k){
+  room=k;
+  document.querySelectorAll(".rooms button").forEach(b=>b.classList.toggle("on",b.dataset.k===k));
+  if(unsub)unsub();
+  const q=query(collection(db,"rooms",k,"messages"),orderBy("ts","desc"),limit(100));
+  unsub=onSnapshot(q,s=>draw(s.docs.slice().reverse()),err=>{$("log").innerHTML=`<div class="note">Can't load messages. Check your Firebase setup.</div>`;console.error(err)});
+}
+
+foot();
+try{
+  const app=initializeApp(firebaseConfig);
+  db=getFirestore(app);
+  const auth=getAuth(app);
+  onAuthStateChanged(auth,u=>{if(u){uid=u.uid;switchRoom(room)}});
+  await signInAnonymously(auth);
+}catch(e){$("log").innerHTML=`<div class="note">Setup needed: add your Firebase config in index.html (see README.md).</div>`;console.error(e)}
+</script>
+</body>
+</html>

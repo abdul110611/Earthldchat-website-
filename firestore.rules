@@ -1,0 +1,31 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Chat messages: anyone signed in (anonymously is fine) can read and post
+    match /rooms/{room}/messages/{msg} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['text','name','country','uid','ts'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 500
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 24
+        && request.resource.data.country is string
+        && request.resource.data.country.size() <= 30
+        && request.resource.data.ts == request.time;
+      allow update, delete: if false;   // only you (via the Firebase console) can remove messages
+    }
+
+    // Reports: users can file them, only you can read them (in the console)
+    match /reports/{id} {
+      allow create: if request.auth != null
+        && request.resource.data.by == request.auth.uid
+        && request.resource.data.keys().hasOnly(['room','msg','by','ts']);
+      allow read, update, delete: if false;
+    }
+  }
+}
